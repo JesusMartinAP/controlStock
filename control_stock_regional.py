@@ -69,18 +69,18 @@ def obtener_estado_precio_imagenes(codigo_padre, pais):
 
         soup_precio = BeautifulSoup(response_precio.content, 'html.parser')
         
-        # Extraer el precio actual. Se prioriza la versión de promoción si existe.
+        # Precio actual: se prioriza la versión de promoción
         precio_element = (soup_precio.select_one('div.price.price-promotion') or 
                           soup_precio.select_one('div.desktop-price') or 
                           soup_precio.select_one('div.price') or 
                           soup_precio.select_one('[itemprop="price"]'))
         precio = precio_element.text.strip() if precio_element else "N/A"
         
-        # Extraer el precio original (full price) que generalmente está dentro de <del>
+        # Precio original (full price) extraído de la etiqueta <del>
         precio_original_element = soup_precio.find('del')
         precio_original = precio_original_element.text.strip() if precio_original_element else "N/A"
         
-        # Extraer el descuento; se busca el porcentaje en el texto
+        # Descuento extraído del <p class="promotion">
         descuento_element = soup_precio.find('p', class_='promotion')
         if descuento_element:
             match = re.search(r'(\d+%)', descuento_element.text)
@@ -115,7 +115,6 @@ def actualizar_progreso(page):
     minutos, segundos = divmod(resto, 60)
     progreso = (codigos_procesados / total_codigos) * 100
 
-    # Actualizar elementos de la interfaz
     page.progress_bar.value = progreso / 100
     page.contador.value = f"Procesados: {codigos_procesados}/{total_codigos}"
     page.tiempo.value = f"Tiempo: {horas:02d}:{minutos:02d}:{segundos:02d}"
@@ -132,6 +131,12 @@ def procesar_codigos(page, codigos, pais):
         futures = {executor.submit(obtener_estado_precio_imagenes, codigo, pais): codigo for codigo in codigos}
         
         for future in concurrent.futures.as_completed(futures):
+            # Si se ha solicitado detener el proceso, cancelar las tareas pendientes y salir del bucle
+            if not proceso_en_ejecucion:
+                for fut in futures:
+                    if not fut.done():
+                        fut.cancel()
+                break
             codigo = futures[future]
             try:
                 resultado = future.result()
@@ -141,7 +146,7 @@ def procesar_codigos(page, codigos, pais):
             
             codigos_procesados += 1
             actualizar_progreso(page)
-
+    # Guardar resultados obtenidos hasta el momento
     guardar_resultados(page, pais)
     proceso_en_ejecucion = False
 
@@ -169,33 +174,51 @@ def main(page: ft.Page):
     page.theme_mode = ft.ThemeMode.LIGHT
     page.window_width = 800
     page.window_height = 600
+    page.scroll = ft.ScrollMode.AUTO  # Habilita scroll en la página
     
-    # Componentes de UI
+    # Área para los códigos con altura fija para activar scroll interno
     codigos_control = ft.TextField(
         multiline=True, 
+        height=200,
         min_lines=10,
-        hint_text="Ingrese códigos separados por espacio o nueva línea",
+        max_lines=10,
+        hint_text="Ingrese códigos separados por espacio o nueva línea (o cargue un archivo)",
         width=700
     )
     
-    # Invertimos el orden: el primer parámetro es el valor (usado en la URL) y el segundo la etiqueta visible.
     pais_selector = ft.Dropdown(
         options=[
             ft.dropdown.Option("pe", "Perú"),
             ft.dropdown.Option("bo", "Bolivia"),
             ft.dropdown.Option("ec", "Ecuador")
         ],
-        value=None,  # sin valor predeterminado para forzar la selección
+        value=None,
         label="País",
         width=200
     )
     
-    # Elementos de progreso (ahora son atributos de page)
+    # Elementos de progreso
     page.progress_bar = ft.ProgressBar(width=700, visible=False)
     page.contador = ft.Text()
     page.tiempo = ft.Text()
     
-    # Botones
+    # FilePicker para cargar un archivo con los códigos
+    def on_file_picker_result(e: ft.FilePickerResultEvent):
+        if e.files:
+            try:
+                file = e.files[0]
+                with open(file.path, "r", encoding="utf-8") as f:
+                    contenido = f.read()
+                codigos_control.value = contenido
+                page.update()
+            except Exception as ex:
+                page.add(ft.Text(f"Error leyendo el archivo: {ex}", color=ft.colors.RED))
+                
+    file_picker = ft.FilePicker(on_result=on_file_picker_result)
+    page.overlay.append(file_picker)
+    
+    btn_cargar_archivo = ft.ElevatedButton("Cargar archivo", on_click=lambda e: file_picker.pick_files())
+    
     btn_iniciar = ft.ElevatedButton("Iniciar scraping", scale=1.2)
     btn_detener = ft.OutlinedButton("Detener proceso")
     
@@ -203,7 +226,7 @@ def main(page: ft.Page):
     page.add(
         ft.Column([
             ft.Row([pais_selector], alignment=ft.MainAxisAlignment.CENTER),
-            ft.Row([codigos_control], alignment=ft.MainAxisAlignment.CENTER),
+            ft.Row([codigos_control, btn_cargar_archivo], alignment=ft.MainAxisAlignment.CENTER),
             ft.Row([btn_iniciar, btn_detener], alignment=ft.MainAxisAlignment.CENTER),
             page.progress_bar,
             page.contador,
@@ -211,7 +234,6 @@ def main(page: ft.Page):
         ])
     )
     
-    # Eventos
     def iniciar_scraping(e):
         global proceso_en_ejecucion
         if not pais_selector.value:
@@ -219,7 +241,7 @@ def main(page: ft.Page):
             return
         if not proceso_en_ejecucion:
             proceso_en_ejecucion = True
-            page.progress_bar.visible = True  # Hacer visible la barra
+            page.progress_bar.visible = True
             codigos = codigos_control.value.strip().split()
             procesar_codigos(page, codigos, pais_selector.value)
     
