@@ -8,6 +8,7 @@ import time
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
+import re
 
 # Variables globales
 proceso_en_ejecucion = False
@@ -68,14 +69,24 @@ def obtener_estado_precio_imagenes(codigo_padre, pais):
 
         soup_precio = BeautifulSoup(response_precio.content, 'html.parser')
         
-        precio_element = soup_precio.select_one('div.desktop-price, div.price, [itemprop="price"]')
-        precio = ''.join(filter(lambda x: x.isdigit() or x in [',', '.'], precio_element.text.strip())) if precio_element else "N/A"
+        # Extraer el precio actual. Se prioriza la versión de promoción si existe.
+        precio_element = (soup_precio.select_one('div.price.price-promotion') or 
+                          soup_precio.select_one('div.desktop-price') or 
+                          soup_precio.select_one('div.price') or 
+                          soup_precio.select_one('[itemprop="price"]'))
+        precio = precio_element.text.strip() if precio_element else "N/A"
         
-        precio_descuento_element = soup_precio.find('del')
-        precio_descuento = precio_descuento_element.text.strip() if precio_descuento_element else "N/A"
+        # Extraer el precio original (full price) que generalmente está dentro de <del>
+        precio_original_element = soup_precio.find('del')
+        precio_original = precio_original_element.text.strip() if precio_original_element else "N/A"
         
+        # Extraer el descuento; se busca el porcentaje en el texto
         descuento_element = soup_precio.find('p', class_='promotion')
-        descuento = descuento_element.text.replace("Descuento del", "").strip() if descuento_element else "N/A"
+        if descuento_element:
+            match = re.search(r'(\d+%)', descuento_element.text)
+            descuento = match.group(1) if match else descuento_element.text.replace("Descuento del", "").strip()
+        else:
+            descuento = "N/A"
         
         galeria_imagenes = soup_precio.find('div', class_='desktop-image-gallery')
         imagenes = [img['data-src'] for img in galeria_imagenes.find_all('img', attrs={'data-src': True})] if galeria_imagenes else []
@@ -90,7 +101,7 @@ def obtener_estado_precio_imagenes(codigo_padre, pais):
             url_precio,
             tiempo_total,
             descuento,
-            precio_descuento
+            precio_original
         )
 
     except Exception as e:
