@@ -1,14 +1,15 @@
 import concurrent.futures
-from datetime import datetime
-import requests
-from bs4 import BeautifulSoup
-from openpyxl import Workbook
-import flet as ft
 import time
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-import os
 import re
+from datetime import datetime
+import os
+import flet as ft
+from openpyxl import Workbook
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # Variables globales
 proceso_en_ejecucion = False
@@ -17,82 +18,103 @@ total_codigos = 0
 codigos_procesados = 0
 start_time = None
 
-def requests_retry_session(retries=5, backoff_factor=2.0, status_forcelist=(500, 502, 503, 504)):
-    session = requests.Session()
-    retry = Retry(
-        total=retries,
-        read=retries,
-        connect=retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=status_forcelist,
-    )
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=50)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-    return session
-
-def obtener_estado_precio_imagenes(codigo_padre, pais):
+def obtener_estado_precio_imagenes_selenium(codigo_padre, pais):
     if not codigo_padre:
         return "Código vacío", "N/A", 0, "N/A", "N/A", 0, "N/A", "N/A"
-
-    session = requests_retry_session()
 
     if len(codigo_padre) == 8:
         codigo_padre = codigo_padre + "001"
 
+    # Configuración de Selenium (Chrome en modo headless)
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    driver = webdriver.Chrome(options=chrome_options)
+
     try:
-        time.sleep(2.0)
+        # Medir tiempo de procesamiento para este producto
+        start_producto = time.time()
 
+        # --- Extracción del estado del producto ---
         url_estado = f'https://www.marathon.store/{pais}/view/ProductVariantSelectorComponentController?componentUid=VariantSelector&currentProductCode={codigo_padre}'
-        url_precio = f'https://www.marathon.store/{pais}/p/{codigo_padre}'
+        driver.get(url_estado)
+        try:
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_all_elements_located((By.CSS_SELECTOR, "li[data-url]"))
+            )
+        except Exception as e:
+            print(f"Timeout en cargar estado para {codigo_padre}: {e}")
 
-        # Estado del producto
-        inicio_tiempo = time.time()
-        response_estado = session.get(url_estado, timeout=20)
-        
-        if response_estado.status_code != 200:
-            return f"Error HTTP {response_estado.status_code}", "N/A", 0, "N/A", "N/A", 0, "N/A", "N/A"
-
-        soup_estado = BeautifulSoup(response_estado.content, 'html.parser')
+        lis = driver.find_elements(By.CSS_SELECTOR, "li[data-url]")
         estado = "Agotado"
-        
-        if lis := soup_estado.find_all('li', attrs={'data-url': lambda x: x and str(codigo_padre) in x}):
-            for li in lis:
-                if li.get('data-has-stock') == "true" or li.get('data-selected') == "true":
+        for li in lis:
+            data_url = li.get_attribute("data-url")
+            if codigo_padre in data_url:
+                if li.get_attribute("data-has-stock") == "true" or li.get_attribute("data-selected") == "true":
                     estado = "Disponible"
                     break
 
-        # Detalles del producto
-        response_precio = session.get(url_precio, timeout=20)
-        if response_precio.status_code != 200:
-            return estado, "N/A", 0, "N/A", "N/A", 0, "N/A", "N/A"
+        # --- Extracción de detalles del producto ---
+        url_precio = f'https://www.marathon.store/{pais}/p/{codigo_padre}'
+        driver.get(url_precio)
 
-        soup_precio = BeautifulSoup(response_precio.content, 'html.parser')
-        
-        # Precio actual: se prioriza la versión de promoción
-        precio_element = (soup_precio.select_one('div.price.price-promotion') or 
-                          soup_precio.select_one('div.desktop-price') or 
-                          soup_precio.select_one('div.price') or 
-                          soup_precio.select_one('[itemprop="price"]'))
-        precio = precio_element.text.strip() if precio_element else "N/A"
-        
-        # Precio original (full price) extraído de la etiqueta <del>
-        precio_original_element = soup_precio.find('del')
-        precio_original = precio_original_element.text.strip() if precio_original_element else "N/A"
-        
+        # Precio actual (se prueban varios selectores)
+        precio = "N/A"
+        price_selectors = [
+            "div.price.price-promotion",
+            "div.desktop-price",
+            "div.price",
+            "[itemprop='price']"
+        ]
+        for selector in price_selectors:
+            try:
+                price_element = WebDriverWait(driver, 15).until(
+                    EC.visibility_of_element_located((By.CSS_SELECTOR, selector))
+                )
+                precio = price_element.text.strip()
+                if precio != "":
+                    break
+            except Exception as e:
+                print(f"Selector '{selector}' no encontró precio para {codigo_padre}: {e}")
+                continue
+
+        # Precio original (full price) del elemento <del>
+        try:
+            precio_original_element = WebDriverWait(driver, 10).until(
+                EC.visibility_of_element_located((By.TAG_NAME, "del"))
+            )
+            precio_original = precio_original_element.text.strip()
+        except Exception as e:
+            print(f"No se encontró precio original para {codigo_padre}: {e}")
+            precio_original = "N/A"
+
         # Descuento extraído del <p class="promotion">
-        descuento_element = soup_precio.find('p', class_='promotion')
-        if descuento_element:
-            match = re.search(r'(\d+%)', descuento_element.text)
-            descuento = match.group(1) if match else descuento_element.text.replace("Descuento del", "").strip()
-        else:
+        try:
+            descuento_element = WebDriverWait(driver, 10).until(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, "p.promotion"))
+            )
+            texto_descuento = descuento_element.text.strip()
+            match = re.search(r'(\d+%)', texto_descuento)
+            descuento = match.group(1) if match else texto_descuento.replace("Descuento del", "").strip()
+        except Exception as e:
+            print(f"No se encontró descuento para {codigo_padre}: {e}")
             descuento = "N/A"
-        
-        galeria_imagenes = soup_precio.find('div', class_='desktop-image-gallery')
-        imagenes = [img['data-src'] for img in galeria_imagenes.find_all('img', attrs={'data-src': True})] if galeria_imagenes else []
-        
-        tiempo_total = time.time() - inicio_tiempo
-        
+
+        # Imágenes: se extraen las URLs desde el atributo data-src de las imágenes de la galería
+        try:
+            galeria_imagenes = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "div.desktop-image-gallery"))
+            )
+            imagenes_elements = galeria_imagenes.find_elements(By.TAG_NAME, "img")
+            imagenes = [img.get_attribute("data-src") for img in imagenes_elements if img.get_attribute("data-src")]
+        except Exception as e:
+            print(f"No se encontró galería de imágenes para {codigo_padre}: {e}")
+            imagenes = []
+
+        end_producto = time.time()
+        tiempo_total = round(end_producto - start_producto, 2)
+
         return (
             estado,
             precio,
@@ -103,10 +125,11 @@ def obtener_estado_precio_imagenes(codigo_padre, pais):
             descuento,
             precio_original
         )
-
     except Exception as e:
-        print(f"Error en {codigo_padre}: {str(e)}")
-        return f"Error: {str(e)}", "N/A", 0, "N/A", "N/A", 0, "N/A", "N/A"
+        print(f"Error en {codigo_padre}: {e}")
+        return (f"Error: {e}", "N/A", 0, "N/A", "N/A", 0, "N/A", "N/A")
+    finally:
+        driver.quit()
 
 def actualizar_progreso(page):
     global codigos_procesados, total_codigos, start_time
@@ -128,10 +151,8 @@ def procesar_codigos(page, codigos, pais):
     estado_codigos = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {executor.submit(obtener_estado_precio_imagenes, codigo, pais): codigo for codigo in codigos}
-        
+        futures = {executor.submit(obtener_estado_precio_imagenes_selenium, codigo, pais): codigo for codigo in codigos}
         for future in concurrent.futures.as_completed(futures):
-            # Si se ha solicitado detener el proceso, cancelar las tareas pendientes y salir del bucle
             if not proceso_en_ejecucion:
                 for fut in futures:
                     if not fut.done():
@@ -142,11 +163,9 @@ def procesar_codigos(page, codigos, pais):
                 resultado = future.result()
                 estado_codigos.append((codigo, *resultado))
             except Exception as exc:
-                estado_codigos.append((codigo, f"Error: {exc}", "N/A", 0, "N/A", "N/A", 0, "N/A", "N/A"))
-            
+                estado_codigos.append((codigo, f"Error: {exc}", "N/A", 0, "N/A", 0, "N/A", "N/A"))
             codigos_procesados += 1
             actualizar_progreso(page)
-    # Guardar resultados obtenidos hasta el momento
     guardar_resultados(page, pais)
     proceso_en_ejecucion = False
 
@@ -170,13 +189,12 @@ def guardar_resultados(page, pais):
     ))
 
 def main(page: ft.Page):
-    page.title = "Scraper Marathon"
+    page.title = "Scraper Marathon con Selenium"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.window_width = 800
     page.window_height = 600
-    page.scroll = ft.ScrollMode.AUTO  # Habilita scroll en la página
+    page.scroll = ft.ScrollMode.AUTO
     
-    # Área para los códigos con altura fija para activar scroll interno
     codigos_control = ft.TextField(
         multiline=True, 
         height=200,
@@ -197,12 +215,10 @@ def main(page: ft.Page):
         width=200
     )
     
-    # Elementos de progreso
     page.progress_bar = ft.ProgressBar(width=700, visible=False)
     page.contador = ft.Text()
     page.tiempo = ft.Text()
     
-    # FilePicker para cargar un archivo con los códigos
     def on_file_picker_result(e: ft.FilePickerResultEvent):
         if e.files:
             try:
@@ -222,7 +238,6 @@ def main(page: ft.Page):
     btn_iniciar = ft.ElevatedButton("Iniciar scraping", scale=1.2)
     btn_detener = ft.OutlinedButton("Detener proceso")
     
-    # Layout
     page.add(
         ft.Column([
             ft.Row([pais_selector], alignment=ft.MainAxisAlignment.CENTER),
