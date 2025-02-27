@@ -6,6 +6,7 @@ from openpyxl import Workbook
 from bs4 import BeautifulSoup
 import time
 import threading
+import os
 
 # Configuración
 MAX_WORKERS = 20  # Número máximo de hilos
@@ -15,9 +16,10 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 }
 
-# Variables globales de control
+# Variables globales de control y para el Excel generado
 processing_paused = False
 processing_running = False
+last_excel_file = None
 
 def completar_codigo(codigo):
     """Agrega '001' a códigos de 8 dígitos."""
@@ -61,6 +63,7 @@ def obtener_datos_producto(codigo_padre):
         else:
             precio_actual = 'N/A'
         
+        # Aquí se renombra la columna C a "Full Price"
         precio_anterior = soup.select_one('span.value[content]:nth-of-type(2)')
         if precio_anterior:
             precio_anterior = precio_anterior.get('content', 'N/A')
@@ -86,22 +89,26 @@ def obtener_datos_producto(codigo_padre):
         return (codigo_padre, 'Error inesperado', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', url, 'Error inesperado')
 
 def guardar_resultados(resultados):
-    """Guarda los resultados en un archivo Excel."""
+    """Guarda los resultados en un archivo Excel y retorna su nombre."""
+    global last_excel_file
     wb = Workbook()
     ws = wb.active
     ws.title = "Datos Productos"
+    # Cambiamos los encabezados según lo solicitado
     headers_excel = [
-        "CODIGO", "PRECIO ACTUAL", "PRECIO ANTERIOR", "DESCUENTO",
-        "Cant. Img", "DESCRIPCION COMERCIAL", "TIEMPO DE CARGA (s)", "URL", "STATUS WEB"
+        "CODIGO", "PRECIO ACTUAL", "Full Price", "DESCUENTO",
+        "Cant. Img", "DESCRIPCION COMERCIAL", "TIEMPO DE CARGA (s)", "URL", "Control Stock"
     ]
     for col, header in enumerate(headers_excel, start=1):
         ws.cell(row=1, column=col, value=header)
     for i, row in enumerate(resultados, start=2):
         for j, value in enumerate(row, start=1):
             ws.cell(row=i, column=j, value=value)
-    fecha_actual = datetime.now().strftime("%Y-%m-%d")
-    nombre_archivo = f"Datos_Productos_Web_{fecha_actual}.xlsx"
+    # Incluimos fecha y hora en el nombre del archivo
+    fecha_hora_actual = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    nombre_archivo = f"Datos_Productos_Web_{fecha_hora_actual}.xlsx"
     wb.save(nombre_archivo)
+    last_excel_file = nombre_archivo
     return nombre_archivo
 
 def process_codes(codes, progress_callback, status_callback):
@@ -154,6 +161,7 @@ def main(page: ft.Page):
     btn_load_file = ft.ElevatedButton("Cargar archivo txt")
     btn_start = ft.ElevatedButton("Iniciar Procesamiento")
     btn_pause = ft.ElevatedButton("Pausar Procesamiento")
+    btn_open_excel = ft.ElevatedButton("Abrir Excel")
     btn_pause.disabled = True  # Inhabilitado hasta que se inicie el proceso
 
     # Configuración del FilePicker para cargar el archivo
@@ -202,13 +210,23 @@ def main(page: ft.Page):
         btn_pause.disabled = True
         page.update()
 
+    def on_open_excel_click(e):
+        if last_excel_file and os.path.exists(last_excel_file):
+            try:
+                os.startfile(last_excel_file)  # Funciona en Windows
+            except Exception as ex:
+                update_status(f"Error al abrir el archivo: {ex}")
+        else:
+            update_status("No se ha generado ningún archivo Excel.")
+
     btn_start.on_click = on_start_click
     btn_pause.on_click = on_pause_click
     btn_load_file.on_click = lambda e: file_picker.pick_files(allow_multiple=False)
+    btn_open_excel.on_click = on_open_excel_click
 
     page.add(
         txt_codes,
-        ft.Row([btn_load_file, btn_start, btn_pause]),
+        ft.Row([btn_load_file, btn_start, btn_pause, btn_open_excel]),
         progress_bar,
         status_text
     )
