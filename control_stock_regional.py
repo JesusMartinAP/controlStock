@@ -106,14 +106,14 @@ def obtener_estado_precio_imagenes_selenium(codigo_padre, pais):
         tiempo_total = round(end_producto - start_producto, 2)
 
         return (
-            estado,
-            precio,
-            len(imagenes),
-            ', '.join(imagenes),
-            url_precio,
-            tiempo_total,
-            descuento,
-            precio_original
+            estado,          # Índice 1 (para "Control Stock")
+            precio,          # Índice 2 (se moverá al final como "Precio")
+            len(imagenes),   # Índice 3
+            ', '.join(imagenes),  # Índice 4
+            url_precio,      # Índice 5
+            tiempo_total,    # Índice 6
+            descuento,       # Índice 7
+            precio_original  # Índice 8 (para "Full Price")
         )
     except Exception as e:
         print(f"Error en {codigo_padre}: {e}")
@@ -151,6 +151,9 @@ def procesar_codigos(page, codigos, pais):
             codigo = futures[future]
             try:
                 resultado = future.result()
+                # La fila original tiene el siguiente orden:
+                # (codigo, estado, precio, imágenes, enlaces_imagenes, url, tiempo, descuento, precio_original)
+                # Se reordena para que "Precio" se mueva al final.
                 estado_codigos.append((codigo, *resultado))
             except Exception as exc:
                 estado_codigos.append((codigo, f"Error: {exc}", "N/A", 0, "N/A", 0, "N/A", "N/A"))
@@ -163,11 +166,33 @@ def guardar_resultados(page, pais):
     wb = Workbook()
     ws = wb.active
     ws.title = "Resultados"
-    headers = ["Código", "Estado", "Precio", "Imágenes", "Enlaces Imágenes", "URL", "Tiempo", "Descuento", "Precio Original"]
+    # Nuevo orden de columnas:
+    # A: Código
+    # B: Control Stock (antes "Estado")
+    # C: Imágenes
+    # D: Enlaces Imágenes
+    # E: URL
+    # F: Tiempo
+    # G: Descuento
+    # H: Full Price (antes "Precio Original")
+    # I: Precio (mover de la posición original)
+    headers = ["Código", "Control Stock", "Imágenes", "Enlaces Imágenes", "URL", "Tiempo", "Descuento", "Full Price", "Precio"]
     ws.append(headers)
     
     for fila in estado_codigos:
-        ws.append(fila)
+        # fila tiene el orden: (codigo, estado, precio, imágenes, enlaces_imagenes, url, tiempo, descuento, precio_original)
+        nuevo_fila = (
+            fila[0],  # Código
+            fila[1],  # Control Stock (Estado)
+            fila[3],  # Imágenes (originalmente índice 3)
+            fila[4],  # Enlaces Imágenes (índice 4)
+            fila[5],  # URL (índice 5)
+            fila[6],  # Tiempo (índice 6)
+            fila[7],  # Descuento (índice 7)
+            fila[8],  # Full Price (antes Precio Original, índice 8)
+            fila[2]   # Precio (movido al final, índice 2)
+        )
+        ws.append(nuevo_fila)
     
     nombre_archivo = f"Resultados_{pais}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
     wb.save(nombre_archivo)
