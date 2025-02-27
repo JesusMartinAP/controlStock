@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import time
 import threading
 import os
+import re
 
 # Configuración
 MAX_WORKERS = 20  # Número máximo de hilos
@@ -41,17 +42,19 @@ def obtener_datos_producto(codigo_padre):
         
         # Determinar el estado web
         if 'marathon.cl/' not in final_url:
-            status_web = 'Redirección detectada'
-        elif "Página no encontrada" in soup.text or "El producto que buscas no existe" in soup.text:
-            status_web = 'No disponible'
+            status_web = 'REDIRECCIÓN DETECTADA'
+        elif "PÁGINA NO ENCONTRADA" in soup.text.upper() or "EL PRODUCTO QUE BUSCAS NO EXISTE" in soup.text.upper():
+            status_web = 'NO DISPONIBLE'
         elif response.status_code == 404:
-            status_web = 'Error 404'
+            status_web = 'ERROR 404'
         else:
-            status_web = 'Disponible'
+            status_web = 'DISPONIBLE'
         if final_url == 'https://www.marathon.cl/':
-            status_web = 'Redireccionado al inicio'
+            status_web = 'REDIRECCIONADO AL INICIO'
         
-        # Extraer precios y demás datos
+        # EXTRAER PRECIOS Y DEMÁS DATOS
+        
+        # PRECIO ACTUAL
         precio_actual = soup.select_one('span.value[content]')
         if not precio_actual:
             precio_actual = soup.select_one('span.price-sales')
@@ -63,50 +66,62 @@ def obtener_datos_producto(codigo_padre):
         else:
             precio_actual = 'N/A'
         
-        # Aquí se renombra la columna C a "Full Price"
-        precio_anterior = soup.select_one('span.value[content]:nth-of-type(2)')
-        if precio_anterior:
-            precio_anterior = precio_anterior.get('content', 'N/A')
+        # FULL PRICE (columna C): se extrae usando la ruta proporcionada
+        full_price_elem = soup.select_one("#pdp del span span")
+        if full_price_elem:
+            full_price = full_price_elem.get_text(strip=True)
         else:
-            precio_anterior = 'N/A'
+            full_price = 'N/A'
         
-        descuento = soup.select_one('div.pd-item-promo')
-        descuento = descuento.text.strip() if descuento else 'N/A'
+        # DESCUENTO (columna D): se extrae solo el porcentaje
+        descuento_elem = soup.select_one('div.pd-item-promo')
+        if descuento_elem:
+            descuento_text = descuento_elem.text.strip()
+            match = re.search(r'-?(\d+%?)', descuento_text)
+            if match:
+                descuento = match.group(1)
+            else:
+                descuento = descuento_text
+        else:
+            descuento = 'N/A'
+        
+        # CANTIDAD DE IMÁGENES
         imagenes = len(soup.select('img.galley_img'))
         
+        # DESCRIPCIÓN COMERCIAL
         descripcion_element = soup.select_one('div.product-text[data-product-field="longDescription"]')
         if not descripcion_element:
             descripcion_element = soup.select_one('div.product-description')
         descripcion_texto = descripcion_element.get_text(strip=True) if descripcion_element else 'N/A'
         
-        return (codigo_padre, precio_actual, precio_anterior, descuento, imagenes, descripcion_texto, round(load_time, 2), url, status_web)
+        return (codigo_padre, precio_actual, full_price, descuento, imagenes, descripcion_texto, round(load_time, 2), url, status_web)
     
     except requests.exceptions.RequestException as e:
-        print(f"Error de red al procesar {codigo_padre}: {str(e)}")
-        return (codigo_padre, 'Error de red', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', url, 'Error de red')
+        print(f"ERROR DE RED AL PROCESAR {codigo_padre}: {str(e)}")
+        return (codigo_padre, 'ERROR DE RED', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', url, 'ERROR DE RED')
     except Exception as e:
-        print(f"Error inesperado al procesar {codigo_padre}: {str(e)}")
-        return (codigo_padre, 'Error inesperado', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', url, 'Error inesperado')
+        print(f"ERROR INESPERADO AL PROCESAR {codigo_padre}: {str(e)}")
+        return (codigo_padre, 'ERROR INESPERADO', 'N/A', 'N/A', 'N/A', 'N/A', 'N/A', url, 'ERROR INESPERADO')
 
 def guardar_resultados(resultados):
     """Guarda los resultados en un archivo Excel y retorna su nombre."""
     global last_excel_file
     wb = Workbook()
     ws = wb.active
-    ws.title = "Datos Productos"
-    # Cambiamos los encabezados según lo solicitado
+    ws.title = "DATOS PRODUCTOS"
+    # Encabezados en mayúsculas
     headers_excel = [
-        "CODIGO", "PRECIO ACTUAL", "Full Price", "DESCUENTO",
-        "Cant. Img", "DESCRIPCION COMERCIAL", "TIEMPO DE CARGA (s)", "URL", "Control Stock"
+        "CODIGO", "PRECIO ACTUAL", "FULL PRICE", "DESCUENTO",
+        "CANT. IMG", "DESCRIPCION COMERCIAL", "TIEMPO DE CARGA (S)", "URL", "CONTROL STOCK"
     ]
     for col, header in enumerate(headers_excel, start=1):
         ws.cell(row=1, column=col, value=header)
     for i, row in enumerate(resultados, start=2):
         for j, value in enumerate(row, start=1):
             ws.cell(row=i, column=j, value=value)
-    # Incluimos fecha y hora en el nombre del archivo
+    # Nombre del archivo con fecha y hora
     fecha_hora_actual = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    nombre_archivo = f"Datos_Productos_Web_{fecha_hora_actual}.xlsx"
+    nombre_archivo = f"DATOS_PRODUCTOS_WEB_{fecha_hora_actual}.xlsx"
     wb.save(nombre_archivo)
     last_excel_file = nombre_archivo
     return nombre_archivo
@@ -121,13 +136,13 @@ def process_codes(codes, progress_callback, status_callback):
         futures = {executor.submit(obtener_datos_producto, code): code for code in codes}
         for i, future in enumerate(as_completed(futures), start=1):
             if processing_paused:
-                status_callback("Proceso pausado.")
+                status_callback("PROCESO PAUSADO.")
                 break
             result = future.result()
             results.append(result)
             elapsed = datetime.now() - start_time
             elapsed_str = str(elapsed).split('.')[0]
-            status_callback(f"Procesando código {i}/{total} - Tiempo transcurrido: {elapsed_str}")
+            status_callback(f"PROCESANDO CÓDIGO {i}/{total} - TIEMPO TRANSCURRIDO: {elapsed_str}")
             progress_callback(i / total)
             time.sleep(0.5)  # Pequeña espera entre solicitudes
     return results
@@ -140,28 +155,28 @@ def run_processing(codes, progress_callback, status_callback, done_callback):
     results = process_codes(codes, progress_callback, status_callback)
     if results:
         file_name = guardar_resultados(results)
-        status_callback(f"Procesamiento completado. Archivo guardado: {file_name}")
+        status_callback(f"PROCESAMIENTO COMPLETADO. ARCHIVO GUARDADO: {file_name}")
     processing_running = False
     done_callback()
 
 def main(page: ft.Page):
-    page.title = "Scraper de Marathon.cl"
+    page.title = "SCRAPER DE MARATHON.CL"
     page.vertical_alignment = ft.MainAxisAlignment.START
 
     # Elementos de la interfaz
     txt_codes = ft.TextField(
-        label="Códigos (separados por espacio o salto de línea)",
+        label="CÓDIGOS (SEPARADOS POR ESPACIO O SALTO DE LÍNEA)",
         multiline=True,
         width=600,
         height=200
     )
-    status_text = ft.Text(value="Estado: Esperando iniciar...")
+    status_text = ft.Text(value="ESTADO: ESPERANDO INICIAR...")
     progress_bar = ft.ProgressBar(width=600, value=0)
     
-    btn_load_file = ft.ElevatedButton("Cargar archivo txt")
-    btn_start = ft.ElevatedButton("Iniciar Procesamiento")
-    btn_pause = ft.ElevatedButton("Pausar Procesamiento")
-    btn_open_excel = ft.ElevatedButton("Abrir Excel")
+    btn_load_file = ft.ElevatedButton("CARGAR ARCHIVO TXT")
+    btn_start = ft.ElevatedButton("INICIAR PROCESAMIENTO")
+    btn_pause = ft.ElevatedButton("PAUSAR PROCESAMIENTO")
+    btn_open_excel = ft.ElevatedButton("ABRIR EXCEL")
     btn_pause.disabled = True  # Inhabilitado hasta que se inicie el proceso
 
     # Configuración del FilePicker para cargar el archivo
@@ -188,7 +203,7 @@ def main(page: ft.Page):
     def on_start_click(e):
         nonlocal processing_thread
         if txt_codes.value.strip() == "":
-            update_status("Por favor, ingresa o carga códigos.")
+            update_status("POR FAVOR, INGRESA O CARGA CÓDIGOS.")
             return
         # Separa los códigos por espacios y saltos de línea
         codes = [code.strip() for code in txt_codes.value.replace("\n", " ").split() if code.strip()]
@@ -206,7 +221,7 @@ def main(page: ft.Page):
     def on_pause_click(e):
         global processing_paused
         processing_paused = True
-        update_status("Pausando proceso, se guardarán los resultados parciales...")
+        update_status("PAUSANDO PROCESO, SE GUARDARÁN LOS RESULTADOS PARCIALES...")
         btn_pause.disabled = True
         page.update()
 
@@ -215,9 +230,9 @@ def main(page: ft.Page):
             try:
                 os.startfile(last_excel_file)  # Funciona en Windows
             except Exception as ex:
-                update_status(f"Error al abrir el archivo: {ex}")
+                update_status(f"ERROR AL ABRIR EL ARCHIVO: {ex}")
         else:
-            update_status("No se ha generado ningún archivo Excel.")
+            update_status("NO SE HA GENERADO NINGÚN ARCHIVO EXCEL.")
 
     btn_start.on_click = on_start_click
     btn_pause.on_click = on_pause_click
@@ -235,11 +250,10 @@ def file_picker_result(e, txt_codes, page):
     if e.files:
         file = e.files[0]
         try:
-            # Se asume que el contenido viene en bytes y se decodifica a UTF-8
             content = file.content.decode("utf-8")
             txt_codes.value = content
             page.update()
         except Exception as ex:
-            print("Error al leer el archivo:", ex)
+            print("ERROR AL LEER EL ARCHIVO:", ex)
 
 ft.app(target=main)
