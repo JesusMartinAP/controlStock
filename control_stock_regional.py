@@ -59,47 +59,37 @@ def obtener_estado_precio_imagenes_selenium(codigo_padre, pais):
         url_precio = f'https://www.marathon.store/{pais}/p/{codigo_padre}'
         driver.get(url_precio)
 
-        # Precio actual (se prueban varios selectores)
+        # Precio actual usando XPath especificado
         precio = "N/A"
-        price_selectors = [
-            "div.price.price-promotion",
-            "div.desktop-price",
-            "div.price",
-            "[itemprop='price']"
-        ]
-        for selector in price_selectors:
-            try:
-                price_element = WebDriverWait(driver, 15).until(
-                    EC.visibility_of_element_located((By.CSS_SELECTOR, selector))
-                )
-                precio = price_element.text.strip()
-                if precio != "":
-                    break
-            except Exception as e:
-                print(f"Selector '{selector}' no encontró precio para {codigo_padre}: {e}")
-                continue
+        try:
+            price_element = WebDriverWait(driver, 15).until(
+                EC.visibility_of_element_located((By.XPATH, "/html/body/main/div[4]/div[1]/div[1]/div[1]/div[3]/div[2]/div[2]"))
+            )
+            precio = price_element.text.strip()
+        except Exception as e:
+            print(f"No se encontró el precio para {codigo_padre} con el XPath especificado: {e}")
 
-        # Precio original (full price) del elemento <del>
+        # Precio original (full price) usando XPath especificado
+        precio_original = "N/A"
         try:
             precio_original_element = WebDriverWait(driver, 10).until(
-                EC.visibility_of_element_located((By.TAG_NAME, "del"))
+                EC.visibility_of_element_located((By.XPATH, "/html/body/main/div[4]/div[1]/div[1]/div[1]/div[3]/div[2]/div[1]/del"))
             )
             precio_original = precio_original_element.text.strip()
         except Exception as e:
-            print(f"No se encontró precio original para {codigo_padre}: {e}")
-            precio_original = "N/A"
+            print(f"No se encontró precio original para {codigo_padre} con el XPath especificado: {e}")
 
-        # Descuento extraído del <p class="promotion">
+        # Descuento extraído usando XPath especificado
+        descuento = "N/A"
         try:
             descuento_element = WebDriverWait(driver, 10).until(
-                EC.visibility_of_element_located((By.CSS_SELECTOR, "p.promotion"))
+                EC.visibility_of_element_located((By.XPATH, "/html/body/main/div[4]/div[1]/div[1]/div[1]/div[3]/div[1]/p"))
             )
             texto_descuento = descuento_element.text.strip()
             match = re.search(r'(\d+%)', texto_descuento)
             descuento = match.group(1) if match else texto_descuento.replace("Descuento del", "").strip()
         except Exception as e:
-            print(f"No se encontró descuento para {codigo_padre}: {e}")
-            descuento = "N/A"
+            print(f"No se encontró descuento para {codigo_padre} con el XPath especificado: {e}")
 
         # Imágenes: se extraen las URLs desde el atributo data-src de las imágenes de la galería
         try:
