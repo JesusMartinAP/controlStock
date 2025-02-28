@@ -52,8 +52,6 @@ def obtener_datos_producto(codigo_padre):
         if final_url == 'https://www.marathon.cl/':
             status_web = 'REDIRECCIONADO AL INICIO'
         
-        # EXTRAER PRECIOS Y DEMÁS DATOS
-        
         # PRECIO ACTUAL
         precio_actual = soup.select_one('span.value[content]')
         if not precio_actual:
@@ -160,6 +158,8 @@ def run_processing(codes, progress_callback, status_callback, done_callback):
     done_callback()
 
 def main(page: ft.Page):
+    # Establecer fondo blanco para la interfaz
+    page.bgcolor = ft.colors.WHITE
     page.title = "SCRAPER DE MARATHON.CL"
     page.vertical_alignment = ft.MainAxisAlignment.START
 
@@ -168,19 +168,45 @@ def main(page: ft.Page):
         label="CÓDIGOS (SEPARADOS POR ESPACIO O SALTO DE LÍNEA)",
         multiline=True,
         width=600,
-        height=200
+        height=200,
+        border_color=ft.colors.GREY,
+        border_width=2
     )
-    status_text = ft.Text(value="ESTADO: ESPERANDO INICIAR...")
+    
+    file_status = ft.Text(value="Ningún archivo cargado", color=ft.colors.BLACK)
+    
+    status_text = ft.Text(value="ESTADO: ESPERANDO INICIAR...", color=ft.colors.BLACK)
     progress_bar = ft.ProgressBar(width=600, value=0)
     
-    btn_load_file = ft.ElevatedButton("CARGAR ARCHIVO TXT")
-    btn_start = ft.ElevatedButton("INICIAR PROCESAMIENTO")
-    btn_pause = ft.ElevatedButton("PAUSAR PROCESAMIENTO")
-    btn_open_excel = ft.ElevatedButton("ABRIR EXCEL")
+    # Botones con estilo dinámico
+    btn_load_file = ft.ElevatedButton(
+        "CARGAR ARCHIVO TXT",
+        bgcolor=ft.colors.BLUE,
+        color=ft.colors.WHITE,
+        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+    )
+    btn_start = ft.ElevatedButton(
+        "INICIAR PROCESAMIENTO",
+        bgcolor=ft.colors.BLUE,
+        color=ft.colors.WHITE,
+        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+    )
+    btn_pause = ft.ElevatedButton(
+        "PAUSAR PROCESAMIENTO",
+        bgcolor=ft.colors.BLUE,
+        color=ft.colors.WHITE,
+        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+    )
+    btn_open_excel = ft.ElevatedButton(
+        "ABRIR EXCEL",
+        bgcolor=ft.colors.BLUE,
+        color=ft.colors.WHITE,
+        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+    )
     btn_pause.disabled = True  # Inhabilitado hasta que se inicie el proceso
 
     # Configuración del FilePicker para cargar el archivo
-    file_picker = ft.FilePicker(on_result=lambda e: file_picker_result(e, txt_codes, page))
+    file_picker = ft.FilePicker(on_result=lambda e: file_picker_result(e, txt_codes, file_status, page))
     page.overlay.append(file_picker)
 
     processing_thread = None
@@ -239,21 +265,28 @@ def main(page: ft.Page):
     btn_load_file.on_click = lambda e: file_picker.pick_files(allow_multiple=False)
     btn_open_excel.on_click = on_open_excel_click
 
+    # Agregar elementos a la página
     page.add(
         txt_codes,
-        ft.Row([btn_load_file, btn_start, btn_pause, btn_open_excel]),
+        file_status,
+        ft.Row([btn_load_file, btn_start, btn_pause, btn_open_excel], alignment=ft.MainAxisAlignment.CENTER),
         progress_bar,
         status_text
     )
 
-def file_picker_result(e, txt_codes, page):
+def file_picker_result(e, txt_codes, file_status, page):
     if e.files:
         file = e.files[0]
         try:
-            content = file.content.decode("utf-8")
+            with open(file.path, "r", encoding="utf-8") as f:
+                content = f.read()
             txt_codes.value = content
+            file_status.value = f"ARCHIVO CARGADO: {file.name}"
             page.update()
         except Exception as ex:
+            file_status.value = "ERROR AL LEER EL ARCHIVO"
+            page.update()
             print("ERROR AL LEER EL ARCHIVO:", ex)
+
 
 ft.app(target=main)
