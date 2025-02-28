@@ -71,7 +71,7 @@ def obtener_datos_producto(codigo_padre):
         else:
             full_price = 'N/A'
         
-        # DESCUENTO (columna D): se extrae solo el porcentaje
+        # DESCUENTO (columna D): extraer solo el porcentaje
         descuento_elem = soup.select_one('div.pd-item-promo')
         if descuento_elem:
             descuento_text = descuento_elem.text.strip()
@@ -107,7 +107,6 @@ def guardar_resultados(resultados):
     wb = Workbook()
     ws = wb.active
     ws.title = "DATOS PRODUCTOS"
-    # Encabezados en mayúsculas
     headers_excel = [
         "CODIGO", "PRECIO ACTUAL", "FULL PRICE", "DESCUENTO",
         "CANT. IMG", "DESCRIPCION COMERCIAL", "TIEMPO DE CARGA (S)", "URL", "CONTROL STOCK"
@@ -117,7 +116,6 @@ def guardar_resultados(resultados):
     for i, row in enumerate(resultados, start=2):
         for j, value in enumerate(row, start=1):
             ws.cell(row=i, column=j, value=value)
-    # Nombre del archivo con fecha y hora
     fecha_hora_actual = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     nombre_archivo = f"DATOS_PRODUCTOS_WEB_{fecha_hora_actual}.xlsx"
     wb.save(nombre_archivo)
@@ -142,41 +140,50 @@ def process_codes(codes, progress_callback, status_callback):
             elapsed_str = str(elapsed).split('.')[0]
             status_callback(f"PROCESANDO CÓDIGO {i}/{total} - TIEMPO TRANSCURRIDO: {elapsed_str}")
             progress_callback(i / total)
-            time.sleep(0.5)  # Pequeña espera entre solicitudes
+            time.sleep(0.5)
     return results
 
 def run_processing(codes, progress_callback, status_callback, done_callback):
-    """Función que se ejecuta en segundo plano para procesar los códigos."""
+    """Ejecuta el procesamiento en segundo plano, guardando resultados parciales si se pausa."""
     global processing_running, processing_paused
     processing_running = True
     processing_paused = False
     results = process_codes(codes, progress_callback, status_callback)
     if results:
         file_name = guardar_resultados(results)
-        status_callback(f"PROCESAMIENTO COMPLETADO. ARCHIVO GUARDADO: {file_name}")
+        if processing_paused:
+            status_callback(f"PROCESAMIENTO PAUSADO. RESULTADOS PARCIALES GUARDADOS EN: {file_name}")
+        else:
+            status_callback(f"PROCESAMIENTO COMPLETADO. ARCHIVO GUARDADO: {file_name}")
     processing_running = False
     done_callback()
 
 def main(page: ft.Page):
-    # Establecer fondo blanco para la interfaz
     page.bgcolor = ft.colors.WHITE
     page.title = "SCRAPER DE MARATHON.CL"
     page.vertical_alignment = ft.MainAxisAlignment.START
+    page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
 
-    # Elementos de la interfaz
+    # Campo de códigos responsivo
     txt_codes = ft.TextField(
         label="CÓDIGOS (SEPARADOS POR ESPACIO O SALTO DE LÍNEA)",
         multiline=True,
-        width=600,
-        height=200,
+        expand=True,
         border_color=ft.colors.GREY,
-        border_width=2
+        border_width=2,
+        content_padding=10
     )
     
     file_status = ft.Text(value="Ningún archivo cargado", color=ft.colors.BLACK)
-    
     status_text = ft.Text(value="ESTADO: ESPERANDO INICIAR...", color=ft.colors.BLACK)
-    progress_bar = ft.ProgressBar(width=600, value=0)
+    
+    progress_bar = ft.ProgressBar(
+        value=0,
+        color=ft.colors.BLUE,
+        bgcolor=ft.colors.LIGHT_BLUE,
+        height=20,
+        width=600
+    )
     
     # Botones con estilo dinámico
     btn_load_file = ft.ElevatedButton(
@@ -203,15 +210,14 @@ def main(page: ft.Page):
         color=ft.colors.WHITE,
         style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
     )
-    btn_pause.disabled = True  # Inhabilitado hasta que se inicie el proceso
+    btn_pause.disabled = True
 
-    # Configuración del FilePicker para cargar el archivo
+    # Configuración del FilePicker (se leerá por ruta)
     file_picker = ft.FilePicker(on_result=lambda e: file_picker_result(e, txt_codes, file_status, page))
     page.overlay.append(file_picker)
-
+    
     processing_thread = None
-
-    # Funciones de actualización de UI (se llaman desde el thread)
+    
     def update_progress(value):
         progress_bar.value = value
         page.update()
@@ -225,52 +231,55 @@ def main(page: ft.Page):
         btn_pause.disabled = True
         progress_bar.value = 0
         page.update()
-
+    
     def on_start_click(e):
         nonlocal processing_thread
         if txt_codes.value.strip() == "":
             update_status("POR FAVOR, INGRESA O CARGA CÓDIGOS.")
             return
-        # Separa los códigos por espacios y saltos de línea
         codes = [code.strip() for code in txt_codes.value.replace("\n", " ").split() if code.strip()]
         btn_start.disabled = True
         btn_pause.disabled = False
         page.update()
-        # Inicia el procesamiento en un thread en segundo plano
         processing_thread = threading.Thread(
             target=run_processing,
             args=(codes, update_progress, update_status, processing_done),
             daemon=True
         )
         processing_thread.start()
-
+    
     def on_pause_click(e):
         global processing_paused
         processing_paused = True
         update_status("PAUSANDO PROCESO, SE GUARDARÁN LOS RESULTADOS PARCIALES...")
         btn_pause.disabled = True
         page.update()
-
+    
     def on_open_excel_click(e):
         if last_excel_file and os.path.exists(last_excel_file):
             try:
-                os.startfile(last_excel_file)  # Funciona en Windows
+                os.startfile(last_excel_file)
             except Exception as ex:
                 update_status(f"ERROR AL ABRIR EL ARCHIVO: {ex}")
         else:
             update_status("NO SE HA GENERADO NINGÚN ARCHIVO EXCEL.")
-
+    
     btn_start.on_click = on_start_click
     btn_pause.on_click = on_pause_click
     btn_load_file.on_click = lambda e: file_picker.pick_files(allow_multiple=False)
     btn_open_excel.on_click = on_open_excel_click
-
-    # Agregar elementos a la página
+    
     page.add(
-        txt_codes,
+        ft.Container(content=txt_codes, expand=True, padding=10),
         file_status,
-        ft.Row([btn_load_file, btn_start, btn_pause, btn_open_excel], alignment=ft.MainAxisAlignment.CENTER),
-        progress_bar,
+        ft.Row(
+            controls=[btn_load_file, btn_start, btn_pause, btn_open_excel],
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=10,
+            run_spacing=10,
+            wrap=True
+        ),
+        ft.Container(content=progress_bar, padding=10),
         status_text
     )
 
@@ -287,6 +296,5 @@ def file_picker_result(e, txt_codes, file_status, page):
             file_status.value = "ERROR AL LEER EL ARCHIVO"
             page.update()
             print("ERROR AL LEER EL ARCHIVO:", ex)
-
 
 ft.app(target=main)
