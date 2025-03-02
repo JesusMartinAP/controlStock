@@ -11,7 +11,7 @@ import re
 import sys
 import subprocess
 import asyncio
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
 # Variables globales
 processing_paused = False
@@ -23,33 +23,64 @@ start_time = None
 total_codes = 0
 processed_codes = 0
 
+# -------------------------------------------------------
+# Bitácora (log) en la interfaz
+log_area = None  # Se asignará en main()
+
+def log_message(msg: str):
+    """Agrega un mensaje al log_area, con salto de línea."""
+    if log_area:
+        log_area.value += f"{msg}\n"
+        log_area.update()
+    print(msg)  # También en consola
+
+# -------------------------------------------------------
 async def extraer_datos_playwright(codigo, pais):
     """
     Extrae datos dinámicos de un producto usando Playwright y BeautifulSoup.
-    Se espera a que se cargue la tabla de tallas y se determina si existe al menos
-    una talla disponible (no deshabilitada) para indicar que el producto tiene stock.
-    Además, se extraen precio, full price, descuento, imágenes y demás.
+    - Determina si hay alguna talla habilitada (stock_status).
+    - Extrae precio (columna C), descuento (columna H) y full price (columna I)
+      con los selectores que especificaste.
+    - Si ocurre un timeout en page.goto, se captura la excepción y se retorna
+      un estado de "TIMEOUT".
     """
     if len(codigo) == 8:
         codigo += "001"
     base_url = f"https://www.marathon.store/{pais}/p/{codigo}"
     inicio = time.time()
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        await page.goto(base_url)
-        try:
-            # Esperamos a que se cargue la tabla de tallas
-            await page.wait_for_selector("table.table-size-selector", timeout=10000)
-        except Exception as e:
-            print(f"Timeout esperando la tabla de tallas para {codigo}: {e}")
-        content = await page.content()
-        await browser.close()
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+
+            # Aumentamos el timeout a 60s
+            page.set_default_navigation_timeout(60000)
+
+            try:
+                await page.goto(base_url, wait_until="load")
+            except PlaywrightTimeout:
+                log_message(f"[TIMEOUT] {codigo} excedió el tiempo de carga.")
+                return (codigo, "TIMEOUT", "N/A", 0, "N/A", base_url, round(time.time()-inicio,2), "N/A", "N/A")
+
+            # Intentamos esperar la tabla de tallas, pero si no aparece, no bloqueamos
+            try:
+                await page.wait_for_selector("table.table-size-selector", timeout=10000)
+            except PlaywrightTimeout:
+                log_message(f"[NO TABLE] {codigo} no cargó la tabla de tallas en 10s.")
+
+            content = await page.content()
+            await browser.close()
+
+    except Exception as e:
+        log_message(f"[ERROR] No se pudo cargar {base_url}: {e}")
+        return (codigo, "ERROR AL CARGAR", "N/A", 0, "N/A", base_url, 0, "N/A", "N/A")
+
     fin = time.time()
     tiempo_respuesta = round(fin - inicio, 2)
     soup = BeautifulSoup(content, "html.parser")
     
-    # --- CONTROL DE STOCK: Evaluar si existe alguna talla disponible ---
+    # --- CONTROL DE STOCK: ver si existe alguna talla disponible ---
     table = soup.find("table", class_=lambda x: x and "table-size-selector" in x)
     if table:
         cells = table.find_all("td")
@@ -71,24 +102,46 @@ async def extraer_datos_playwright(codigo, pais):
     else:
         stock_status = "TABLA DE TALLAS NO ENCONTRADA"
     
-    # --- PRECIO ACTUAL ---
-    precio_elem = soup.select_one("div.price > span.current-price")
-    precio = precio_elem.get_text(strip=True) if precio_elem else "N/A"
+    # --- PRECIO (Columna C) ---
+    try:
+        precio_elem = soup.select_one(
+            "main > div:nth-of-type(4) > div:nth-of-type(1) > div:nth-of-type(1) > "
+            "div:nth-of-type(4) > div > div:nth-of-type(1) > div:nth-of-type(2) > "
+            "div:nth-of-type(2) > div:nth-of-type(1)"
+        )
+        precio = precio_elem.get_text(strip=True) if precio_elem else "N/A"
+    except Exception as e:
+        log_message(f"[PRECIO FAIL] {codigo}: {e}")
+        precio = "N/A"
     
-    # --- FULL PRICE (precio original tachado) ---
-    full_price_elem = soup.select_one("div.price del.original-price")
-    full_price = full_price_elem.get_text(strip=True) if full_price_elem else "N/A"
+    # --- FULL PRICE (Columna I) ---
+    try:
+        full_price_elem = soup.select_one(
+            "main > div:nth-of-type(4) > div:nth-of-type(1) > div:nth-of-type(1) > "
+            "div:nth-of-type(1) > div:nth-of-type(3) > div:nth-of-type(2) > "
+            "div:nth-of-type(1) > del"
+        )
+        full_price = full_price_elem.get_text(strip=True) if full_price_elem else "N/A"
+    except Exception as e:
+        log_message(f"[FULL PRICE FAIL] {codigo}: {e}")
+        full_price = "N/A"
     
-    # --- DESCUENTO ---
-    descuento_elem = soup.select_one("div.discount-label")
+    # --- DESCUENTO (Columna H) ---
     descuento = "N/A"
-    if descuento_elem:
-        desc_text = descuento_elem.get_text(strip=True)
-        match = re.search(r"(\d+%)", desc_text)
-        if match:
-            descuento = match.group(1)
-        else:
-            descuento = desc_text
+    try:
+        descuento_elem = soup.select_one(
+            "main > div:nth-of-type(4) > div:nth-of-type(1) > div:nth-of-type(1) > "
+            "div:nth-of-type(1) > div:nth-of-type(3) > div:nth-of-type(1) > p"
+        )
+        if descuento_elem:
+            desc_text = descuento_elem.get_text(strip=True)
+            match = re.search(r"(\d+%)", desc_text)
+            if match:
+                descuento = match.group(1)
+            else:
+                descuento = desc_text
+    except Exception as e:
+        log_message(f"[DESCUENTO FAIL] {codigo}: {e}")
     
     # --- IMÁGENES ---
     imagenes = soup.select("div.desktop-image-gallery img")
@@ -100,13 +153,25 @@ async def extraer_datos_playwright(codigo, pais):
     cant_img = len(enlaces_img)
     enlaces_str = ", ".join(enlaces_img)
     
-    return (codigo, stock_status, precio, cant_img, enlaces_str, base_url, tiempo_respuesta, descuento, full_price)
+    return (
+        codigo,         # A
+        stock_status,   # B
+        precio,         # C
+        cant_img,       # D
+        enlaces_str,    # E
+        base_url,       # F
+        tiempo_respuesta,# G
+        descuento,      # H
+        full_price      # I
+    )
 
 def extraer_datos_playwright_sync(codigo, pais):
     return asyncio.run(extraer_datos_playwright(codigo, pais))
 
 def process_codes(codes, pais, progress_callback, status_callback, done_callback):
-    global processing_paused, processing_running, results_data, total_codes, processed_codes, start_time
+    global processing_paused, processing_running, results_data
+    global total_codes, processed_codes, start_time
+
     processing_running = True
     processing_paused = False
     results_data = []
@@ -116,6 +181,7 @@ def process_codes(codes, pais, progress_callback, status_callback, done_callback
     
     max_workers = 5
     futures = {}
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(extraer_datos_playwright_sync, code, pais): code for code in codes}
         try:
@@ -126,23 +192,31 @@ def process_codes(codes, pais, progress_callback, status_callback, done_callback
                         if not f.done():
                             f.cancel()
                     break
+
                 result = future.result()
                 results_data.append(result)
                 processed_codes += 1
+
                 progress_callback(processed_codes / total_codes)
                 elapsed = datetime.now() - start_time
                 h, r = divmod(elapsed.seconds, 3600)
                 m, s = divmod(r, 60)
-                status_callback(f"Procesando {processed_codes}/{total_codes} - Tiempo {h:02d}:{m:02d}:{s:02d}")
+                status_callback(
+                    f"Procesando {processed_codes}/{total_codes} - "
+                    f"Tiempo {h:02d}:{m:02d}:{s:02d}"
+                )
+                log_message(f"[OK] {result[0]} -> STOCK={result[1]} | PRECIO={result[2]}")
                 time.sleep(0.2)
+
         except Exception as e:
             status_callback(f"Error durante el procesamiento: {e}")
-    print(f"[DEBUG] Registros acumulados: {len(results_data)}")
+    
     file_name = guardar_resultados()
     if processing_paused:
         status_callback(f"RESULTADOS PARCIALES GUARDADOS: {file_name}")
     else:
         status_callback(f"PROCESAMIENTO COMPLETADO. ARCHIVO: {file_name}")
+
     processing_running = False
     done_callback()
 
@@ -151,16 +225,23 @@ def guardar_resultados():
     wb = Workbook()
     ws = wb.active
     ws.title = "RESULTADOS"
-    headers = ["CÓDIGO", "CONTROL STOCK", "PRECIO", "CANT. IMG", "ENLACES IMÁGENES", "URL", "TIEMPO (s)", "DESCUENTO", "FULL PRICE"]
+
+    headers = [
+        "CÓDIGO", "CONTROL STOCK", "PRECIO", "CANT. IMG", "ENLACES IMÁGENES",
+        "URL", "TIEMPO (s)", "DESCUENTO", "FULL PRICE"
+    ]
     for col, header in enumerate(headers, start=1):
         ws.cell(row=1, column=col, value=header)
+
     for i, row in enumerate(results_data, start=2):
         for j, value in enumerate(row, start=1):
             ws.cell(row=i, column=j, value=value)
+
     fecha_hora = datetime.now().strftime("%Y%m%d_%H%M%S")
     nombre_archivo = f"RESULTADOS_{fecha_hora}.xlsx"
     wb.save(nombre_archivo)
     last_excel_file = nombre_archivo
+    log_message(f"[EXCEL] Guardado: {nombre_archivo}")
     return nombre_archivo
 
 def abrir_excel():
@@ -185,8 +266,29 @@ def main(page: ft.Page):
     page.vertical_alignment = ft.MainAxisAlignment.START
     page.scroll = ft.ScrollMode.AUTO
 
+    global log_area
+    # Este Text contendrá los mensajes del log
+    log_area = ft.Text(value="", selectable=True, color=ft.colors.BLACK)
+
+    # Lo ponemos dentro de una Column con scroll
+    log_column = ft.Column(
+        controls=[log_area],
+        width=600,
+        height=200,
+        scroll=ft.ScrollMode.AUTO
+    )
+
+    # Y si quieres un borde, lo envuelves en un Container
+    log_container = ft.Container(
+        content=log_column,
+        border=ft.border.all(1, ft.colors.GREY),
+        border_radius=5,
+        padding=5
+    )
+
     status_text = ft.Text(value="ESTADO: Esperando inicio...", color=ft.colors.BLACK)
     progress_bar = ft.ProgressBar(width=600, value=0)
+
     txt_codes = ft.TextField(
         label="Códigos (separados por espacio o salto de línea)",
         multiline=True,
@@ -204,7 +306,7 @@ def main(page: ft.Page):
         ],
         width=200
     )
-    file_picker = ft.FilePicker(on_result=lambda e: on_file_picked(e, txt_codes, page))
+    file_picker = ft.FilePicker(on_result=lambda e: on_file_picked(e, txt_codes))
     page.overlay.append(file_picker)
 
     btn_load_file = ft.ElevatedButton(
@@ -240,6 +342,8 @@ def main(page: ft.Page):
         btn_start.disabled = False
         btn_pause.disabled = True
         progress_bar.value = 0
+        # Habilitamos abrir Excel
+        btn_open_excel.disabled = False
         page.update()
 
     def on_start_click(e):
@@ -256,6 +360,8 @@ def main(page: ft.Page):
         btn_open_excel.disabled = True
         update_status("Iniciando procesamiento...")
         page.update()
+
+        # Iniciamos en un hilo para no bloquear la UI
         threading.Thread(
             target=process_codes,
             args=(codes, dd_pais.value, update_progress, update_status, processing_done),
@@ -267,6 +373,7 @@ def main(page: ft.Page):
         processing_paused = True
         update_status("Pausando el proceso y guardando resultados...")
         btn_pause.disabled = True
+        # Permite abrir Excel parcial
         btn_open_excel.disabled = False
         page.update()
 
@@ -284,20 +391,23 @@ def main(page: ft.Page):
             txt_codes,
             ft.Row([btn_load_file, btn_start, btn_pause, btn_open_excel]),
             progress_bar,
-            status_text
+            status_text,
+            ft.Text("Bitácora (Log):", color=ft.colors.BLACK, weight=ft.FontWeight.BOLD),
+            log_container
         ], spacing=10)
     )
 
-def on_file_picked(e: ft.FilePickerResultEvent, txt_codes: ft.TextField, page: ft.Page):
+def on_file_picked(e: ft.FilePickerResultEvent, txt_codes: ft.TextField):
     if e.files:
         file = e.files[0]
         try:
             with open(file.path, "r", encoding="utf-8") as f:
                 contenido = f.read()
             txt_codes.value = contenido
-            page.update()
+            txt_codes.update()
+            log_message(f"Archivo {file.name} cargado.")
         except Exception as ex:
-            page.add(ft.Text(f"Error al leer el archivo: {ex}", color=ft.colors.RED))
-            page.update()
+            log_message(f"Error al leer el archivo: {ex}")
 
+# Ejecutar la app
 ft.app(target=main)
