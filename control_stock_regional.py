@@ -261,7 +261,7 @@ def abrir_excel():
     return "Archivo abierto."
 
 def main(page: ft.Page):
-    page.title = "Scraper Marathon Store (Playwright + BS4)"
+    page.title = "Web Scraping Marathon Store"
     page.bgcolor = ft.colors.WHITE
     page.vertical_alignment = ft.MainAxisAlignment.START
     page.scroll = ft.ScrollMode.AUTO
