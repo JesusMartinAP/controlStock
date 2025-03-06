@@ -64,14 +64,14 @@ def obtener_datos_producto(codigo_padre):
         else:
             precio_actual = 'N/A'
         
-        # FULL PRICE (columna C): se extrae usando la ruta proporcionada
+        # FULL PRICE (columna C)
         full_price_elem = soup.select_one("#pdp del span span")
         if full_price_elem:
             full_price = full_price_elem.get_text(strip=True)
         else:
             full_price = 'N/A'
         
-        # DESCUENTO (columna D): extraer solo el porcentaje
+        # DESCUENTO (columna D)
         descuento_elem = soup.select_one('div.pd-item-promo')
         if descuento_elem:
             descuento_text = descuento_elem.text.strip()
@@ -133,6 +133,9 @@ def process_codes(codes, progress_callback, status_callback):
         for i, future in enumerate(as_completed(futures), start=1):
             if processing_paused:
                 status_callback("PROCESO PAUSADO.")
+                # Se intenta cancelar los futuros pendientes
+                for fut in futures:
+                    fut.cancel()
                 break
             result = future.result()
             results.append(result)
